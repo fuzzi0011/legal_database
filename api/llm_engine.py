@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 HF_TOKEN = os.getenv("HF_API_TOKEN", "")          # paste your HF token here or set env var
-HF_MODEL  = "HuggingFaceH4/zephyr-7b-beta"  # free, strong, good at legal text
+HF_MODEL  = "meta-llama/Llama-3.2-3B-Instruct"  # free, strong, good at legal text
 HF_API    = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 SYSTEM_PROMPT = """You are a senior Pakistani legal research assistant specializing in case law 
