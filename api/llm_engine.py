@@ -13,8 +13,8 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 HF_TOKEN = os.getenv("HF_API_TOKEN", "")          # paste your HF token here or set env var
-HF_MODEL  = "deepseek-ai/DeepSeek-V4-Pro"  # free, strong, good at legal text
-HF_API    = f"https://api-inference.huggingface.co/{HF_MODEL}"
+HF_MODEL  = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+HF_API   = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 SYSTEM_PROMPT = """You are a senior Pakistani legal research assistant specializing in case law 
 from the Sindh High Court (SHC), Lahore High Court (LHC), and Islamabad High Court (IHC).
