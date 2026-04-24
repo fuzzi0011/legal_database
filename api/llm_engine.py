@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 HF_TOKEN = os.getenv("HF_API_TOKEN", "")          # paste your HF token here or set env var
-HF_MODEL  = "deepseek-ai/deepseek-coder-1.3b-instruct"
+HF_MODEL  = "google/flan-t5-large"
 HF_API   = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 SYSTEM_PROMPT = """You are a senior Pakistani legal research assistant specializing in case law 
