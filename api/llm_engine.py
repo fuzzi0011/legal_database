@@ -1,180 +1,226 @@
 """
-Legal AI Engine — HuggingFace Chat Completions (2025 API)
-Uses the new HuggingFace router with OpenAI-compatible chat endpoint.
-Free model: meta-llama/Meta-Llama-3.1-8B-Instruct (no credit card needed)
+Legal AI Engine — HuggingFace Inference Providers (Always Online)
+Uses the correct 2025 HF API endpoint: /v1/chat/completions
+This is permanently deployed — no Colab, no local server needed.
 
-Get your free token: https://huggingface.co/settings/tokens
-Set env var: HF_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
+Model: mistralai/Mistral-7B-Instruct-v0.2  (same one that passed your tests)
+
+Setup (one time):
+  1. Go to https://huggingface.co/settings/tokens
+  2. New Token → Token Type: READ → Generate
+  3. Set env var: HF_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 """
 
-import os
-import re
-import logging
-import requests
+import os, re, logging, requests
 
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config ─────────────────────────────────────────────────────────────────
 HF_TOKEN = os.getenv("HF_API_TOKEN", "")
 
-# New HuggingFace router URL (2025) — OpenAI-compatible chat completions
-HF_ROUTER_URL = "https://router.huggingface.co/v1"
+# Correct 2025 HuggingFace Inference Providers endpoint
+# This is the OpenAI-compatible chat completions API — always online
+HF_API_URL = "https://api-inference.huggingface.co/v1/chat/completions"
 
-# Best free models available on HuggingFace router (try in order)
-HF_MODELS = [
-    "meta-llama/Meta-Llama-3.1-8B-Instruct",   # Best quality, free
-    "mistralai/Mistral-7B-Instruct-v0.3",        # Fallback option
-    "HuggingFaceH4/zephyr-7b-beta",              # Another fallback
+# Same model that passed all 3 tests in your Colab
+PRIMARY_MODEL  = "mistralai/Mistral-7B-Instruct-v0.2"
+
+# Fallback models (tried in order if primary fails)
+FALLBACK_MODELS = [
+    "mistralai/Mistral-7B-Instruct-v0.3",
+    "HuggingFaceH4/zephyr-7b-beta",
+    "microsoft/Phi-3-mini-4k-instruct",
+    "Qwen/Qwen2.5-7B-Instruct",
 ]
 
-SYSTEM_PROMPT = """You are a senior Pakistani legal research assistant specializing in case law 
-from the Sindh High Court (SHC), Lahore High Court (LHC), and Islamabad High Court (IHC).
+LEGAL_SYSTEM = """You are a senior Pakistani legal research assistant specializing in 
+case law from the Sindh High Court (SHC), Lahore High Court (LHC), and Islamabad High Court (IHC).
 
-Given a legal query and retrieved case excerpts, provide a structured legal analysis:
+When given a legal query, provide:
+1. Legal Issue: one-line summary
+2. Relevant Legal Principles: key rules that apply
+3. Court Decisions: what Pakistani courts typically decide
+4. Analysis: practical advice for the lawyer
+5. Citations: any relevant Pakistani law or cases
 
-**Legal Issue**: One line summary of the legal question
-**Relevant Cases**: Most applicable cases with citations
-**Court Decisions**: What courts decided and the reasoning
-**Legal Principles**: Key legal rules and principles established  
-**Analysis**: How precedents apply to the current situation
-**Citations**: Full citation list
-
-Always cite: court name, citation number, year, and judge name if available.
-Be precise and analytical. Note: This is research assistance, not legal advice."""
+Be precise. Cite Pakistani statutes and court citations where applicable."""
 
 
-def ask_llm(prompt: str) -> str:
+# ── Core API call ───────────────────────────────────────────────────────────
+
+def _call_hf(model: str, messages: list, timeout: int = 60) -> str:
     """
-    Send prompt to HuggingFace via new router API (chat completions).
-    Tries multiple free models in sequence.
+    Call HuggingFace Inference Providers chat completions endpoint.
+    Returns response text or empty string on failure.
+    """
+    resp = requests.post(
+        HF_API_URL,
+        headers={
+            "Authorization": f"Bearer {HF_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": messages,
+            "max_tokens": 800,
+            "temperature": 0.3,
+            "stream": False,
+        },
+        timeout=timeout,
+    )
+
+    if resp.status_code == 200:
+        data = resp.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+    if resp.status_code == 401:
+        raise ValueError("Invalid HuggingFace token. Check your HF_API_TOKEN.")
+
+    if resp.status_code == 422:
+        # Model not supported by this endpoint — try next
+        log.warning(f"[HF] Model {model} returned 422 (unsupported), trying fallback.")
+        return ""
+
+    if resp.status_code == 503:
+        log.warning(f"[HF] Model {model} is loading (503). Waiting 20s...")
+        import time; time.sleep(20)
+        # Retry once
+        r2 = requests.post(
+            HF_API_URL,
+            headers={"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"},
+            json={"model": model, "messages": messages, "max_tokens": 800,
+                  "temperature": 0.3, "stream": False},
+            timeout=timeout,
+        )
+        if r2.status_code == 200:
+            return r2.json()["choices"][0]["message"]["content"].strip()
+        return ""
+
+    if resp.status_code == 429:
+        log.warning(f"[HF] Rate limit hit on {model}.")
+        return ""
+
+    log.warning(f"[HF] {model} returned {resp.status_code}: {resp.text[:200]}")
+    return ""
+
+
+def ask_llm(query: str, cases: list[dict] = None) -> str:
+    """
+    Send a legal query + retrieved cases to Mistral-7B via HuggingFace.
+    Tries primary model, then fallbacks automatically.
     """
     if not HF_TOKEN:
         return _no_token_message()
 
-    for model in HF_MODELS:
-        result = _try_model(model, prompt)
-        if result and not result.startswith("⚠"):
-            return result
-
-    return "⚠ All HuggingFace models unavailable right now. Try again in a minute. Search results above are still valid."
-
-
-def _try_model(model: str, prompt: str) -> str:
-    """Try one model via HF router chat completions endpoint."""
-    try:
-        headers = {
-            "Authorization": f"Bearer {HF_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": prompt},
-            ],
-            "max_tokens": 900,
-            "temperature": 0.3,
-            "stream": False,
-        }
-
-        resp = requests.post(
-            f"{HF_ROUTER_URL}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=90,
-        )
-
-        if resp.status_code == 503:
-            log.warning(f"[{model}] Model loading (503), waiting 15s...")
-            import time; time.sleep(15)
-            resp = requests.post(
-                f"{HF_ROUTER_URL}/chat/completions",
-                headers=headers, json=payload, timeout=90
+    # Build the user message
+    if cases:
+        case_blocks = []
+        for i, c in enumerate(cases[:5], 1):
+            snippet = c.get("full_text", c.get("snippet", ""))[:1000]
+            case_blocks.append(
+                f"CASE {i}:\n"
+                f"Court: {c.get('court_name', c.get('court', ''))}\n"
+                f"Citation: {c.get('citation', 'N/A')}\n"
+                f"Title: {c.get('title', '')[:100]}\n"
+                f"Date: {c.get('date', 'N/A')}\n"
+                f"Excerpt:\n{snippet}\n"
             )
+        user_content = (
+            f"I found these relevant cases from our legal database:\n\n"
+            + "\n".join(case_blocks)
+            + f"\n\nLegal Query: {query}\n\n"
+            f"Based on the above cases, provide a comprehensive legal analysis "
+            f"with proper Pakistani court citations."
+        )
+    else:
+        user_content = f"Legal Query: {query}"
 
-        if resp.status_code == 404:
-            log.warning(f"[{model}] Not found on router, trying next model.")
-            return f"⚠ Model {model} not available."
+    messages = [
+        {"role": "system", "content": LEGAL_SYSTEM},
+        {"role": "user",   "content": user_content},
+    ]
 
-        if resp.status_code == 401:
-            return "⚠ Invalid HuggingFace token. Check your HF_API_TOKEN."
-
-        resp.raise_for_status()
-        data = resp.json()
-
-        # Standard OpenAI-compatible response format
-        text = data["choices"][0]["message"]["content"].strip()
-        log.info(f"[{model}] Got response, length={len(text)}")
-        return text
-
+    # Try primary model
+    try:
+        log.info(f"[HF] Trying primary model: {PRIMARY_MODEL}")
+        result = _call_hf(PRIMARY_MODEL, messages)
+        if result:
+            log.info(f"[HF] Primary model success — {len(result)} chars")
+            return result
+    except ValueError as e:
+        # Invalid token — no point trying fallbacks
+        return f"⚠ {e}"
     except requests.exceptions.Timeout:
-        log.warning(f"[{model}] Timed out.")
-        return f"⚠ {model} timed out."
+        log.warning(f"[HF] Primary model timed out.")
     except Exception as e:
-        log.warning(f"[{model}] Error: {e}")
-        return f"⚠ {model} error: {e}"
+        log.warning(f"[HF] Primary model error: {e}")
 
+    # Try fallback models
+    for model in FALLBACK_MODELS:
+        try:
+            log.info(f"[HF] Trying fallback: {model}")
+            result = _call_hf(model, messages)
+            if result:
+                log.info(f"[HF] Fallback {model} success — {len(result)} chars")
+                return result
+        except requests.exceptions.Timeout:
+            log.warning(f"[HF] {model} timed out.")
+        except Exception as e:
+            log.warning(f"[HF] {model} error: {e}")
 
-def _no_token_message() -> str:
     return (
-        "ℹ️  AI analysis disabled — HuggingFace token not set.\n\n"
-        "To enable free AI analysis:\n"
-        "  1. Sign up free at https://huggingface.co\n"
-        "  2. Go to Settings → Access Tokens → New Token (Read access)\n"
-        "  3. Set it before starting the server:\n"
-        "       Windows:   set HF_API_TOKEN=hf_xxxxxxxxxx\n"
-        "       Mac/Linux: export HF_API_TOKEN=hf_xxxxxxxxxx\n"
-        "  4. Restart the server\n\n"
-        "Search results above are fully functional without the token."
+        "⚠ All models are temporarily unavailable. "
+        "This usually means HuggingFace is under load — please try again in 1-2 minutes. "
+        "Your search results above are still fully valid."
     )
 
 
-# ── Main Analysis Function ────────────────────────────────────────────────────
+def _no_token_message() -> str:
+    return """ℹ️  AI analysis is disabled — HuggingFace token not set.
+
+To enable Mistral-7B AI analysis (free, always online):
+
+  1. Go to: https://huggingface.co/settings/tokens
+  2. Click "New Token" → Token Type: READ → Generate
+  3. Copy the token (starts with hf_...)
+  4. Set it before starting the server:
+
+     Windows:
+       set HF_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
+       python -m api.server
+
+     Mac/Linux:
+       export HF_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
+       python -m api.server
+
+     Railway (hosting):
+       Add HF_API_TOKEN in Railway Dashboard → Variables tab
+
+Search results above are fully functional without the token."""
+
+
+# ── Main analysis function (called by FastAPI) ──────────────────────────────
 
 def analyze_query(query: str, retrieved_cases: list[dict], full_texts: dict = None) -> dict:
     """
-    Given a query + retrieved cases → generate AI legal analysis via HuggingFace.
-    Returns dict with 'analysis', 'citations', 'cases_used'.
+    Takes a legal query + retrieved cases → returns AI analysis with citations.
+    This is called by api/server.py when user clicks "AI Analyze".
     """
     if not retrieved_cases:
         return {
-            "analysis":   "No relevant cases found. Try different keywords or scrape more data.",
+            "analysis":   "No relevant cases found. Try different keywords or run the scraper.",
             "citations":  [],
             "cases_used": [],
         }
 
-    # Build context from retrieved cases
-    case_blocks = []
-    for i, case in enumerate(retrieved_cases[:5], 1):
-        snippet = case.get("full_text", case.get("snippet", ""))[:1200]
-        case_blocks.append(
-            f"CASE {i}:\n"
-            f"Court: {case.get('court_name', case.get('court', ''))}\n"
-            f"Citation: {case.get('citation', 'N/A')}\n"
-            f"Case No: {case.get('case_number', 'N/A')}\n"
-            f"Title: {case.get('title', '')[:120]}\n"
-            f"Date: {case.get('date', 'N/A')}\n"
-            f"Relevance: {int(case.get('similarity', 0) * 100)}%\n"
-            f"Excerpt:\n{snippet}\n"
-        )
+    analysis_text = ask_llm(query, retrieved_cases)
 
-    context = "\n" + "─"*50 + "\n" + "\n".join(case_blocks) + "─"*50
-
-    prompt = (
-        f"A Pakistani lawyer has this legal research query:\n\n"
-        f"QUERY: {query}\n\n"
-        f"I retrieved these {len(retrieved_cases)} most relevant cases from SHC, LHC, and IHC databases:\n"
-        f"{context}\n\n"
-        f"Provide a comprehensive legal analysis with citations."
-    )
-
-    analysis_text = ask_llm(prompt)
-
-    # Extract citation patterns
+    # Extract citation patterns from response
     citations = re.findall(
-        r"\d{4}\s+(?:SHC|LHC|IHC|PLD|SCMR|CLC|PLJ)\s*\w*\s*\d*",
+        r"\d{4}\s+(?:SHC|LHC|IHC|PLD|SCMR|CLC|PLJ|MLD|NLR)\s*\w*\s*\d*",
         analysis_text
     )
+    # Also include citations from the retrieved cases
     for c in retrieved_cases:
         if c.get("citation") and c["citation"] not in citations:
             citations.append(c["citation"])
@@ -195,12 +241,34 @@ def analyze_query(query: str, retrieved_cases: list[dict], full_texts: dict = No
     }
 
 
+# ── Quick test ──────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    # Quick connection test
+
+    print(f"HF Token set: {'YES ✅' if HF_TOKEN else 'NO ❌'}")
+    print(f"Primary model: {PRIMARY_MODEL}")
+    print(f"API endpoint: {HF_API_URL}")
+
     if not HF_TOKEN:
-        print("Set HF_API_TOKEN env variable first.")
+        print("\n" + _no_token_message())
     else:
-        print(f"Testing with token: {HF_TOKEN[:8]}...")
-        result = ask_llm("What is the NHA's duty of care on national highways in Pakistan?")
-        print(result[:500])
+        print("\nTesting with a sample legal query...")
+        sample_cases = [{
+            "court": "SHC",
+            "court_name": "Sindh High Court",
+            "citation": "2019 SHC KHI 1456",
+            "title": "Muhammad Akram v. National Highway Authority & Others",
+            "date": "2019-03-14",
+            "similarity": 0.92,
+            "full_text": (
+                "NHA held liable for road accident due to absence of road markings, "
+                "missing reflective signs, and no warning indicators near a sharp U-turn. "
+                "Compensation of Rs. 3,500,000 awarded. Section 13 National Highways Act 1991."
+            ),
+        }]
+        result = analyze_query("NHA road accident missing signs liability", sample_cases)
+        print("\n=== Analysis ===")
+        print(result["analysis"])
+        print("\n=== Citations ===")
+        print(result["citations"])
