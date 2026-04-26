@@ -7,5 +7,13 @@ fastapi>=0.115.0
 uvicorn>=0.30.0
 python-multipart>=0.0.9
 tqdm>=4.66.0
+
+# Optional (only if PDFs exist)
 pdfplumber>=0.11.0
-groq>=0.9.0
+
+# Upgrade (highly recommended)
+sentence-transformers>=2.7.0
+
+# Optional performance upgrades
+aiohttp>=3.9.0
+faiss-cpu>=1.8.0
