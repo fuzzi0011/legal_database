@@ -47,9 +47,7 @@ async def startup():
     log.info("Initialising vector database...")
     _db = get_db()
     if _db.count() == 0:
-        log.info("DB empty — loading sample data...")
-        _db.ingest_sample_data()
-        _db.ingest_all_data()
+    log.info("DB is empty. Waiting for scraping...")
     log.info(f"DB ready with {_db.count()} cases.")
 
 
