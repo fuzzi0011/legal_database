@@ -143,32 +143,40 @@ def trigger_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks):
 
 
 def _run_scrape(keyword, courts, max_pages):
-    """Background task: scrape courts and index results."""
-    import importlib, sys
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from scrapers.scraper import SHCScraper, LHCScraper, IHCScraper
+    from scrapers.scraper import SHCScraper, LHCScraper, IHCScraper, enrich_cases
 
-    scraper_map = {"SHC": SHCScraper, "LHC": LHCScraper, "IHC": IHCScraper}
+    scraper_map = {
+        "SHC": SHCScraper,
+        "LHC": LHCScraper,
+        "IHC": IHCScraper
+    }
+
     db = get_db()
     all_cases = []
 
     for court in courts:
         if court not in scraper_map:
             continue
-        s = scraper_map[court]()
+
+        scraper = scraper_map[court]()
+
         try:
-            cases = s.search(keyword, max_pages) if keyword else s.fetch_recent(max_pages)
-            for c in cases:
-                if c.get("url"):
-                    c["full_text"] = s.fetch_judgment_text(c["url"])
+            # 🚀 FULL scraping (not keyword-based anymore)
+            cases = scraper.fetch_all(max_pages=max_pages)
+
+            # ⚡ Fetch full text (multi-threaded)
+            cases = enrich_cases(scraper, cases)
+
             all_cases.extend(cases)
+
             log.info(f"[{court}] Scraped {len(cases)} cases")
+
         except Exception as e:
             log.error(f"[{court}] Scrape error: {e}")
 
     if all_cases:
         db._ingest_cases(all_cases)
-        log.info(f"Indexed {len(all_cases)} new cases. Total: {db.count()}")
+        log.info(f"Indexed {len(all_cases)} cases. Total: {db.count()}")
 
 
 if __name__ == "__main__":
