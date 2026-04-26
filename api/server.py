@@ -46,10 +46,11 @@ async def startup():
     global _db
     log.info("Initialising vector database...")
     _db = get_db()
-    if _db.count() == 0:
-    log.info("DB is empty. Waiting for scraping...")
-    log.info(f"DB ready with {_db.count()} cases.")
 
+    if _db.count() == 0:
+        log.info("DB is empty. Waiting for scraping...")
+
+    log.info(f"DB ready with {_db.count()} cases.")
 
 # ── Request / Response Models ─────────────────────────────────────────────────
 
