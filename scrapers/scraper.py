@@ -1,12 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
 import time
-import logging
-
-log = logging.getLogger(__name__)
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+
 
 def safe_get(url, params=None):
     try:
@@ -14,24 +11,19 @@ def safe_get(url, params=None):
         r.raise_for_status()
         time.sleep(0.2)
         return r
-    except Exception as e:
-        log.error(f"Request failed: {url} — {e}")
+    except:
         return None
 
 
-# ─────────────────────────────────────────────
-# LHC SCRAPER
-# ─────────────────────────────────────────────
-
+# ───────── LHC ─────────
 class LHCScraper:
     BASE = "https://www.lhc.gov.pk"
 
-    def fetch_all(self, max_pages=500):
+    def fetch_all(self, max_pages=10):
         results = []
 
         for page in range(1, max_pages + 1):
-            url = f"{self.BASE}/judgments"
-            resp = safe_get(url, params={"page": page})
+            resp = safe_get(f"{self.BASE}/judgments", {"page": page})
             if not resp:
                 break
 
@@ -40,8 +32,6 @@ class LHCScraper:
 
             if not rows:
                 break
-
-            page_cases = []
 
             for r in rows[1:]:
                 cols = r.find_all("td")
@@ -52,45 +42,27 @@ class LHCScraper:
                 if not link:
                     continue
 
-                case = {
+                results.append({
                     "court": "LHC",
                     "title": link.text.strip(),
                     "url": self.BASE + link.get("href"),
                     "date": cols[1].text.strip(),
                     "citation": cols[2].text.strip(),
-                }
-                page_cases.append(case)
-
-            if not page_cases:
-                break
-
-            log.info(f"LHC page {page}: {len(page_cases)} cases")
-            results.extend(page_cases)
+                    "full_text": ""  # disabled for now
+                })
 
         return results
 
-    def fetch_judgment_text(self, url):
-        resp = safe_get(url)
-        if not resp:
-            return ""
 
-        soup = BeautifulSoup(resp.text, "lxml")
-        return soup.get_text(" ", strip=True)[:20000]
-
-
-# ─────────────────────────────────────────────
-# SHC SCRAPER
-# ─────────────────────────────────────────────
-
+# ───────── SHC ─────────
 class SHCScraper:
     BASE = "https://caselaw.shc.gov.pk"
 
-    def fetch_all(self, max_pages=300):
+    def fetch_all(self, max_pages=10):
         results = []
 
         for page in range(1, max_pages + 1):
-            url = f"{self.BASE}/caselaw/search"
-            resp = safe_get(url, params={"page": page})
+            resp = safe_get(f"{self.BASE}/caselaw/search", {"page": page})
             if not resp:
                 break
 
@@ -100,49 +72,32 @@ class SHCScraper:
             if not cards:
                 break
 
-            page_cases = []
-
             for c in cards:
                 link = c.find("a")
                 if not link:
                     continue
 
-                case = {
+                results.append({
                     "court": "SHC",
                     "title": link.text.strip(),
                     "url": self.BASE + link.get("href"),
                     "date": "",
                     "citation": "",
-                }
-                page_cases.append(case)
-
-            log.info(f"SHC page {page}: {len(page_cases)} cases")
-            results.extend(page_cases)
+                    "full_text": ""
+                })
 
         return results
 
-    def fetch_judgment_text(self, url):
-        resp = safe_get(url)
-        if not resp:
-            return ""
 
-        soup = BeautifulSoup(resp.text, "lxml")
-        return soup.get_text(" ", strip=True)[:20000]
-
-
-# ─────────────────────────────────────────────
-# IHC SCRAPER
-# ─────────────────────────────────────────────
-
+# ───────── IHC ─────────
 class IHCScraper:
     BASE = "https://ihc.gov.pk"
 
-    def fetch_all(self, max_pages=300):
+    def fetch_all(self, max_pages=10):
         results = []
 
         for page in range(1, max_pages + 1):
-            url = f"{self.BASE}/judgments"
-            resp = safe_get(url, params={"page": page})
+            resp = safe_get(f"{self.BASE}/judgments", {"page": page})
             if not resp:
                 break
 
@@ -151,8 +106,6 @@ class IHCScraper:
 
             if not rows:
                 break
-
-            page_cases = []
 
             for r in rows[1:]:
                 cols = r.find_all("td")
@@ -163,38 +116,13 @@ class IHCScraper:
                 if not link:
                     continue
 
-                case = {
+                results.append({
                     "court": "IHC",
                     "title": link.text.strip(),
                     "url": self.BASE + link.get("href"),
                     "date": cols[1].text.strip(),
                     "citation": "",
-                }
-                page_cases.append(case)
-
-            log.info(f"IHC page {page}: {len(page_cases)} cases")
-            results.extend(page_cases)
+                    "full_text": ""
+                })
 
         return results
-
-    def fetch_judgment_text(self, url):
-        resp = safe_get(url)
-        if not resp:
-            return ""
-
-        soup = BeautifulSoup(resp.text, "lxml")
-        return soup.get_text(" ", strip=True)[:20000]
-
-
-# ─────────────────────────────────────────────
-# MULTI-THREAD ENRICHMENT
-# ─────────────────────────────────────────────
-
-def enrich_cases(scraper, cases):
-    def process(case):
-        if case.get("url"):
-            case["full_text"] = scraper.fetch_judgment_text(case["url"])
-        return case
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        return list(executor.map(process, cases))
