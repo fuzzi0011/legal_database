@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 from embeddings.vector_db import get_db
 from api.llm_engine import analyze_query
+from database import init_db, insert_cases
+from scrapers.scraper import LHCScraper, SHCScraper, IHCScraper
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -44,14 +46,14 @@ _db = None
 @app.on_event("startup")
 async def startup():
     global _db
-    log.info("Initialising vector database...")
+
+    log.info("Initializing database...")
+    init_db()
+
     _db = get_db()
+    _db.load_from_db()
 
-    if _db.count() == 0:
-        log.info("DB is empty. Waiting for scraping...")
-
-    log.info(f"DB ready with {_db.count()} cases.")
-
+    log.info(f"Loaded {_db.count()} cases from DB")
 # ── Request / Response Models ─────────────────────────────────────────────────
 
 class SearchRequest(BaseModel):
@@ -144,41 +146,28 @@ def trigger_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks):
 
 
 def _run_scrape(keyword, courts, max_pages):
-    from scrapers.scraper import SHCScraper, LHCScraper, IHCScraper, enrich_cases
+    db = get_db()
 
     scraper_map = {
-        "SHC": SHCScraper,
         "LHC": LHCScraper,
+        "SHC": SHCScraper,
         "IHC": IHCScraper
     }
 
-    db = get_db()
     all_cases = []
 
     for court in courts:
-        if court not in scraper_map:
-            continue
-
         scraper = scraper_map[court]()
+        cases = scraper.fetch_all(max_pages=max_pages)
 
-        try:
-            # 🚀 FULL scraping (not keyword-based anymore)
-            cases = scraper.fetch_all(max_pages=max_pages)
-
-            # ⚡ Fetch full text (multi-threaded)
-            cases = enrich_cases(scraper, cases)
-
-            all_cases.extend(cases)
-
-            log.info(f"[{court}] Scraped {len(cases)} cases")
-
-        except Exception as e:
-            log.error(f"[{court}] Scrape error: {e}")
+        all_cases.extend(cases)
+        log.info(f"{court}: {len(cases)} cases scraped")
 
     if all_cases:
-        db._ingest_cases(all_cases)
-        log.info(f"Indexed {len(all_cases)} cases. Total: {db.count()}")
+        insert_cases(all_cases)
+        db.load_from_db()
 
+        log.info(f"Total cases in DB: {db.count()}")
 
 if __name__ == "__main__":
     import uvicorn
